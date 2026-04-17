@@ -16,7 +16,7 @@ const NIM_API_KEY = process.env.NIM_API_KEY;
 
 // Toggles
 const SHOW_REASONING = false;        // true면 <think> 태그로 추론 과정 노출
-const ENABLE_THINKING_MODE = false;  // true면 모델에 맞는 chat_template_kwargs를 자동 주입
+const ENABLE_THINKING_MODE = true;  // true면 모델에 맞는 chat_template_kwargs를 자동 주입
 const LOG_RESPONSES = true;          // 디버깅용. 요청/응답 둘 다 찍음
 
 // 모델별 thinking 파라미터명이 다름
