@@ -18,6 +18,52 @@ const NIM_API_KEY = process.env.NIM_API_KEY;
 const SHOW_REASONING = false;        // true면 <think> 태그로 추론 과정 노출
 const ENABLE_THINKING_MODE = false;  // true면 chat_template_kwargs.thinking 전달
 
+// axios 에러에서 NIM이 돌려준 실제 에러 body를 뽑아내는 헬퍼.
+// stream 요청이 실패하면 response.data가 stream이라 한 번 모아서 파싱해야 함.
+async function extractNimError(error) {
+  const data = error.response?.data;
+  if (!data) return null;
+  if (typeof data.on === 'function') {
+    try {
+      const chunks = [];
+      for await (const chunk of data) chunks.push(chunk);
+      return JSON.parse(Buffer.concat(chunks).toString());
+    } catch {
+      return null;
+    }
+  }
+  return data;
+}
+
+function sendError(res, error) {
+  const status = error.response?.status || 500;
+  // nimError는 비동기지만 아래 호출부에서 await 해서 넘겨줌
+  return { status };
+}
+
+async function handleError(res, error, label) {
+  const status = error.response?.status || 500;
+  const nimError = await extractNimError(error);
+  console.error(`${label}:`, status, nimError || error.message);
+
+  if (res.headersSent) {
+    // 스트리밍 도중 에러면 그냥 연결 종료
+    return res.end();
+  }
+
+  if (nimError) {
+    // NIM은 보통 { error: { message, type, ... } } 형태로 내려줌
+    return res.status(status).json(nimError);
+  }
+  return res.status(status).json({
+    error: {
+      message: error.message || 'Internal server error',
+      type: 'invalid_request_error',
+      code: status
+    }
+  });
+}
+
 // Health check
 app.get('/health', (req, res) => {
   res.json({
@@ -36,34 +82,26 @@ app.get('/v1/models', async (req, res) => {
     });
     res.json(response.data);
   } catch (error) {
-    console.error('List models error:', error.message);
-    res.status(error.response?.status || 500).json({
-      error: {
-        message: error.message || 'Internal server error',
-        type: 'invalid_request_error',
-        code: error.response?.status || 500
-      }
-    });
+    await handleError(res, error, 'List models error');
   }
 });
 
 // Chat completions (main proxy)
 app.post('/v1/chat/completions', async (req, res) => {
   try {
-    const { model, messages, temperature, max_tokens, stream } = req.body;
-
+    // 들어온 body를 통째로 넘기되, 필요한 것만 덮어씀
     const nimRequest = {
-      model,
-      messages,
-      temperature: temperature ?? 0.6,
-      max_tokens: max_tokens ?? 9024,
-      stream: !!stream,
+      ...req.body,
+      temperature: req.body.temperature ?? 0.6,
+      max_tokens: req.body.max_tokens ?? 9024,
+      stream: !!req.body.stream,
+      // chat_template_kwargs는 최상위 필드로 보내야 함 (extra_body 아님)
       ...(ENABLE_THINKING_MODE && {
-        extra_body: { chat_template_kwargs: { thinking: true } }
+        chat_template_kwargs: { thinking: true }
       })
     };
-    console.log('nimRequest', nimRequest);
-    console.log('model', model);
+
+    const stream = nimRequest.stream;
 
     const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
       headers: {
@@ -148,14 +186,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       res.json(data);
     }
   } catch (error) {
-    console.error('Proxy error:', error.message);
-    res.status(error.response?.status || 500).json({
-      error: {
-        message: error.message || 'Internal server error',
-        type: 'invalid_request_error',
-        code: error.response?.status || 500
-      }
-    });
+    await handleError(res, error, 'Proxy error');
   }
 });
 
