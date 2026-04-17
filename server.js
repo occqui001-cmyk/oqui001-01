@@ -16,8 +16,19 @@ const NIM_API_KEY = process.env.NIM_API_KEY;
 
 // Toggles
 const SHOW_REASONING = false;        // true면 <think> 태그로 추론 과정 노출
-const ENABLE_THINKING_MODE = false;  // true면 chat_template_kwargs.thinking 전달
-const LOG_RESPONSES = true;          // 디버깅용: NIM 응답을 콘솔에 찍음
+const ENABLE_THINKING_MODE = false;  // true면 모델에 맞는 chat_template_kwargs를 자동 주입
+const LOG_RESPONSES = true;          // 디버깅 끝나면 false로
+
+// 모델별 thinking 파라미터명이 달라서 자동 판별.
+// - GLM 계열 (z-ai/glm*): enable_thinking
+// - 그 외 (qwen, deepseek 등): thinking
+function getThinkingKwargs(model = '') {
+  const m = model.toLowerCase();
+  if (m.includes('glm') || m.startsWith('z-ai/')) {
+    return { enable_thinking: true };
+  }
+  return { thinking: true };
+}
 
 // axios 에러에서 NIM이 돌려준 실제 에러 body를 뽑아내는 헬퍼
 async function extractNimError(error) {
@@ -84,7 +95,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       max_tokens: req.body.max_tokens ?? 9024,
       stream: !!req.body.stream,
       ...(ENABLE_THINKING_MODE && {
-        chat_template_kwargs: { thinking: true }
+        chat_template_kwargs: getThinkingKwargs(req.body.model)
       })
     };
 
@@ -135,7 +146,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             if (delta) {
               const { reasoning_content: reasoning, content } = delta;
 
-              // 🔍 청크별 로그 (내용 있는 것만)
+              // 🔍 청크별 누적
               if (LOG_RESPONSES && (reasoning || content)) {
                 chunkCount++;
                 if (reasoning) accReasoning += reasoning;
@@ -171,11 +182,11 @@ app.post('/v1/chat/completions', async (req, res) => {
       response.data.on('end', () => {
         if (LOG_RESPONSES) {
           console.log(`총 청크 수: ${chunkCount}`);
-          console.log(`▼ content (JSON.stringify로 escape 문자 표시):`);
+          console.log(`▼ content (stringify):`);
           console.log(JSON.stringify(accContent));
-          console.log(`▼ reasoning_content:`);
+          console.log(`▼ reasoning_content (stringify):`);
           console.log(JSON.stringify(accReasoning));
-          console.log(`▼ content (실제 렌더링):`);
+          console.log(`▼ content (raw):`);
           console.log(accContent);
           console.log(`===== [STREAM] 종료 =====\n`);
         }
