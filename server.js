@@ -16,11 +16,10 @@ const NIM_API_KEY = process.env.NIM_API_KEY;
 
 // Toggles
 const SHOW_REASONING = false;        // true면 <think> 태그로 추론 과정 노출
-const ENABLE_THINKING_MODE = true;  // true면 모델에 맞는 chat_template_kwargs를 자동 주입
-const LOG_RESPONSES = true;          // 디버깅용. 요청/응답 둘 다 찍음
+const ENABLE_THINKING_MODE = false;  // true면 모델에 맞는 chat_template_kwargs를 자동 주입
 
-// 모델별 thinking 파라미터명이 다름
-// - GLM 계열: enable_thinking (+ NVIDIA 공식 예제는 clear_thinking까지 함께 전달)
+// 모델별 thinking 파라미터명이 달라서 자동 판별
+// - GLM 계열: enable_thinking (+ clear_thinking)
 // - 그 외 (qwen, deepseek 등): thinking
 function getThinkingKwargs(model = '') {
   const m = model.toLowerCase();
@@ -69,8 +68,7 @@ app.get('/health', (req, res) => {
     status: 'ok',
     service: 'NVIDIA NIM Proxy',
     reasoning_display: SHOW_REASONING,
-    thinking_mode: ENABLE_THINKING_MODE,
-    log_responses: LOG_RESPONSES
+    thinking_mode: ENABLE_THINKING_MODE
   });
 });
 
@@ -101,18 +99,6 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     const stream = nimRequest.stream;
 
-    // 🔍 NIM으로 나가는 요청 로깅 (messages는 너무 길어서 길이만 표시)
-    if (LOG_RESPONSES) {
-      const logPayload = {
-        ...nimRequest,
-        messages: `<${nimRequest.messages?.length || 0} messages>`
-      };
-      console.log(`\n===== [REQUEST] 프록시 → NIM =====`);
-      console.log(JSON.stringify(logPayload, null, 2));
-      console.log(`chat_template_kwargs 포함 여부: ${nimRequest.chat_template_kwargs ? 'YES' : 'NO'}`);
-      console.log(`===== [REQUEST] 끝 =====`);
-    }
-
     const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
       headers: {
         'Authorization': `Bearer ${NIM_API_KEY}`,
@@ -128,15 +114,6 @@ app.post('/v1/chat/completions', async (req, res) => {
 
       let buffer = '';
       let reasoningStarted = false;
-
-      // 🔍 디버깅용 누적 버퍼
-      let accContent = '';
-      let accReasoning = '';
-      let chunkCount = 0;
-
-      if (LOG_RESPONSES) {
-        console.log(`\n===== [STREAM RESPONSE] model=${nimRequest.model} 시작 =====`);
-      }
 
       response.data.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -157,12 +134,6 @@ app.post('/v1/chat/completions', async (req, res) => {
 
             if (delta) {
               const { reasoning_content: reasoning, content } = delta;
-
-              if (LOG_RESPONSES && (reasoning || content)) {
-                chunkCount++;
-                if (reasoning) accReasoning += reasoning;
-                if (content) accContent += content;
-              }
 
               if (SHOW_REASONING) {
                 let combined = '';
@@ -190,40 +161,13 @@ app.post('/v1/chat/completions', async (req, res) => {
         });
       });
 
-      response.data.on('end', () => {
-        if (LOG_RESPONSES) {
-          console.log(`총 청크 수: ${chunkCount}`);
-          console.log(`▼ content (stringify):`);
-          console.log(JSON.stringify(accContent));
-          console.log(`▼ reasoning_content (stringify):`);
-          console.log(JSON.stringify(accReasoning));
-          console.log(`▼ content (raw):`);
-          console.log(accContent);
-          console.log(`===== [STREAM RESPONSE] 종료 =====\n`);
-        }
-        res.end();
-      });
-
+      response.data.on('end', () => res.end());
       response.data.on('error', (err) => {
         console.error('Stream error:', err);
         res.end();
       });
     } else {
       const data = response.data;
-
-      if (LOG_RESPONSES) {
-        console.log(`\n===== [NON-STREAM RESPONSE] model=${nimRequest.model} =====`);
-        data.choices.forEach((choice, i) => {
-          console.log(`▼ choice[${i}].message.content (stringify):`);
-          console.log(JSON.stringify(choice.message?.content));
-          console.log(`▼ choice[${i}].message.reasoning_content (stringify):`);
-          console.log(JSON.stringify(choice.message?.reasoning_content));
-          console.log(`▼ choice[${i}].message.content (raw):`);
-          console.log(choice.message?.content);
-        });
-        console.log(`===== [NON-STREAM RESPONSE] 종료 =====\n`);
-      }
-
       data.choices.forEach(choice => {
         if (!choice.message) return;
         if (SHOW_REASONING && choice.message.reasoning_content) {
@@ -253,8 +197,4 @@ app.all('*', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`NVIDIA NIM Proxy running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`Reasoning display: ${SHOW_REASONING ? 'ENABLED' : 'DISABLED'}`);
-  console.log(`Thinking mode: ${ENABLE_THINKING_MODE ? 'ENABLED' : 'DISABLED'}`);
-  console.log(`Response logging: ${LOG_RESPONSES ? 'ENABLED' : 'DISABLED'}`);
 });
