@@ -15,11 +15,11 @@ const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.c
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
 // Toggles
-const SHOW_REASONING = true;        // true면 <think> 태그로 추론 과정 노출
+const SHOW_REASONING = false;        // true면 <think> 태그로 추론 과정 노출
 const ENABLE_THINKING_MODE = false;  // true면 chat_template_kwargs.thinking 전달
+const LOG_RESPONSES = true;          // 디버깅용: NIM 응답을 콘솔에 찍음
 
-// axios 에러에서 NIM이 돌려준 실제 에러 body를 뽑아내는 헬퍼.
-// stream 요청이 실패하면 response.data가 stream이라 한 번 모아서 파싱해야 함.
+// axios 에러에서 NIM이 돌려준 실제 에러 body를 뽑아내는 헬퍼
 async function extractNimError(error) {
   const data = error.response?.data;
   if (!data) return null;
@@ -35,26 +35,14 @@ async function extractNimError(error) {
   return data;
 }
 
-function sendError(res, error) {
-  const status = error.response?.status || 500;
-  // nimError는 비동기지만 아래 호출부에서 await 해서 넘겨줌
-  return { status };
-}
-
 async function handleError(res, error, label) {
   const status = error.response?.status || 500;
   const nimError = await extractNimError(error);
   console.error(`${label}:`, status, nimError || error.message);
 
-  if (res.headersSent) {
-    // 스트리밍 도중 에러면 그냥 연결 종료
-    return res.end();
-  }
+  if (res.headersSent) return res.end();
 
-  if (nimError) {
-    // NIM은 보통 { error: { message, type, ... } } 형태로 내려줌
-    return res.status(status).json(nimError);
-  }
+  if (nimError) return res.status(status).json(nimError);
   return res.status(status).json({
     error: {
       message: error.message || 'Internal server error',
@@ -70,7 +58,8 @@ app.get('/health', (req, res) => {
     status: 'ok',
     service: 'NVIDIA NIM Proxy',
     reasoning_display: SHOW_REASONING,
-    thinking_mode: ENABLE_THINKING_MODE
+    thinking_mode: ENABLE_THINKING_MODE,
+    log_responses: LOG_RESPONSES
   });
 });
 
@@ -89,13 +78,11 @@ app.get('/v1/models', async (req, res) => {
 // Chat completions (main proxy)
 app.post('/v1/chat/completions', async (req, res) => {
   try {
-    // 들어온 body를 통째로 넘기되, 필요한 것만 덮어씀
     const nimRequest = {
       ...req.body,
       temperature: req.body.temperature ?? 0.6,
       max_tokens: req.body.max_tokens ?? 9024,
       stream: !!req.body.stream,
-      // chat_template_kwargs는 최상위 필드로 보내야 함 (extra_body 아님)
       ...(ENABLE_THINKING_MODE && {
         chat_template_kwargs: { thinking: true }
       })
@@ -119,6 +106,15 @@ app.post('/v1/chat/completions', async (req, res) => {
       let buffer = '';
       let reasoningStarted = false;
 
+      // 🔍 디버깅용 누적 버퍼
+      let accContent = '';
+      let accReasoning = '';
+      let chunkCount = 0;
+
+      if (LOG_RESPONSES) {
+        console.log(`\n===== [STREAM] model=${nimRequest.model} 시작 =====`);
+      }
+
       response.data.on('data', (chunk) => {
         buffer += chunk.toString();
         const lines = buffer.split('\n');
@@ -139,6 +135,13 @@ app.post('/v1/chat/completions', async (req, res) => {
             if (delta) {
               const { reasoning_content: reasoning, content } = delta;
 
+              // 🔍 청크별 로그 (내용 있는 것만)
+              if (LOG_RESPONSES && (reasoning || content)) {
+                chunkCount++;
+                if (reasoning) accReasoning += reasoning;
+                if (content) accContent += content;
+              }
+
               if (SHOW_REASONING) {
                 let combined = '';
                 if (reasoning && !reasoningStarted) {
@@ -155,7 +158,6 @@ app.post('/v1/chat/completions', async (req, res) => {
                 }
                 if (combined) delta.content = combined;
               }
-              // reasoning_content는 OpenAI 스펙에 없으므로 항상 제거
               delete delta.reasoning_content;
             }
 
@@ -166,14 +168,40 @@ app.post('/v1/chat/completions', async (req, res) => {
         });
       });
 
-      response.data.on('end', () => res.end());
+      response.data.on('end', () => {
+        if (LOG_RESPONSES) {
+          console.log(`총 청크 수: ${chunkCount}`);
+          console.log(`▼ content (JSON.stringify로 escape 문자 표시):`);
+          console.log(JSON.stringify(accContent));
+          console.log(`▼ reasoning_content:`);
+          console.log(JSON.stringify(accReasoning));
+          console.log(`▼ content (실제 렌더링):`);
+          console.log(accContent);
+          console.log(`===== [STREAM] 종료 =====\n`);
+        }
+        res.end();
+      });
+
       response.data.on('error', (err) => {
         console.error('Stream error:', err);
         res.end();
       });
     } else {
-      // 비스트리밍: 필요한 부분만 수정해서 그대로 전달
       const data = response.data;
+
+      if (LOG_RESPONSES) {
+        console.log(`\n===== [NON-STREAM] model=${nimRequest.model} =====`);
+        data.choices.forEach((choice, i) => {
+          console.log(`▼ choice[${i}].message.content (stringify):`);
+          console.log(JSON.stringify(choice.message?.content));
+          console.log(`▼ choice[${i}].message.reasoning_content (stringify):`);
+          console.log(JSON.stringify(choice.message?.reasoning_content));
+          console.log(`▼ choice[${i}].message.content (raw):`);
+          console.log(choice.message?.content);
+        });
+        console.log(`===== [NON-STREAM] 종료 =====\n`);
+      }
+
       data.choices.forEach(choice => {
         if (!choice.message) return;
         if (SHOW_REASONING && choice.message.reasoning_content) {
@@ -206,4 +234,5 @@ app.listen(PORT, () => {
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Reasoning display: ${SHOW_REASONING ? 'ENABLED' : 'DISABLED'}`);
   console.log(`Thinking mode: ${ENABLE_THINKING_MODE ? 'ENABLED' : 'DISABLED'}`);
+  console.log(`Response logging: ${LOG_RESPONSES ? 'ENABLED' : 'DISABLED'}`);
 });
