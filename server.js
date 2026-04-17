@@ -15,7 +15,7 @@ const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.c
 const NIM_API_KEY = process.env.NIM_API_KEY;
 
 // Toggles
-const SHOW_REASONING = false;        // true면 <think> 태그로 추론 과정 노출
+const SHOW_REASONING = true;        // true면 <think> 태그로 추론 과정 노출
 const ENABLE_THINKING_MODE = false;  // true면 chat_template_kwargs.thinking 전달
 
 // axios 에러에서 NIM이 돌려준 실제 에러 body를 뽑아내는 헬퍼.
