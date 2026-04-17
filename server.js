@@ -63,8 +63,6 @@ app.post('/v1/chat/completions', async (req, res) => {
 
     // Smart model selection with fallback
     let nimModel = MODEL_MAPPING[model];
-    console.log('nimModel', nimModel);
-    console.log('model', model);
     if (!nimModel) {
       try {
         await axios.post(`${NIM_API_BASE}/chat/completions`, {
@@ -102,6 +100,8 @@ app.post('/v1/chat/completions', async (req, res) => {
       extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
       stream: stream || false
     };
+    console.log('nimRequest', nimRequest);
+    console.log('nimModel', nimModel);
     
     // Make request to NVIDIA NIM API
     const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
