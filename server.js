@@ -29,6 +29,40 @@ function getThinkingKwargs(model = '') {
   return { thinking: true };
 }
 
+// GLM-5 계열 모델인지 판별 (glm-5, glm5, glm-5.1, glm-5-air 등 포함, glm-50/glm-4.5 제외)
+function isGlm5Model(model = '') {
+  const m = model.toLowerCase();
+  return /glm-?5(\.|-|$|[^0-9])/.test(m);
+}
+
+// GLM-5에만 추가할 시스템 프롬프트 (줄바꿈/가독성 지시)
+const GLM5_SYSTEM_HINT =
+  'Format your responses with proper line breaks between paragraphs for readability. Use blank lines to separate distinct ideas, sections, or logical units of your response.';
+
+function injectSystemPromptForModel(messages = [], model = '') {
+  if (!isGlm5Model(model)) return messages;
+
+  const idx = messages.findIndex(m => m.role === 'system');
+
+  // 기존 system이 있으면 뒤에 붙이고, 없으면 맨 앞에 새로 추가
+  if (idx >= 0) {
+    const original = messages[idx];
+    const originalContent = typeof original.content === 'string'
+      ? original.content
+      : Array.isArray(original.content)
+        ? original.content.map(p => p.text ?? '').join('')
+        : '';
+
+    const merged = {
+      ...original,
+      content: `${originalContent}\n\n${GLM5_SYSTEM_HINT}`.trim()
+    };
+    return messages.map((m, i) => (i === idx ? merged : m));
+  }
+
+  return [{ role: 'system', content: GLM5_SYSTEM_HINT }, ...messages];
+}
+
 // axios 에러에서 NIM이 돌려준 실제 에러 body를 뽑아내는 헬퍼
 async function extractNimError(error) {
   const data = error.response?.data;
@@ -89,6 +123,7 @@ app.post('/v1/chat/completions', async (req, res) => {
   try {
     const nimRequest = {
       ...req.body,
+      messages: injectSystemPromptForModel(req.body.messages, req.body.model),
       temperature: req.body.temperature ?? 0.6,
       max_tokens: req.body.max_tokens ?? 9024,
       stream: !!req.body.stream,
@@ -96,6 +131,9 @@ app.post('/v1/chat/completions', async (req, res) => {
         chat_template_kwargs: getThinkingKwargs(req.body.model)
       })
     };
+
+    // [DEBUG] 입력 데이터 확인용 — 필요 시 주석 해제
+    // console.log('[INPUT]', JSON.stringify(nimRequest, null, 2));
 
     const stream = nimRequest.stream;
 
@@ -114,6 +152,8 @@ app.post('/v1/chat/completions', async (req, res) => {
 
       let buffer = '';
       let reasoningStarted = false;
+      // [DEBUG] 스트리밍 출력 누적 확인용 — 필요 시 주석 해제
+      // let streamedOutput = '';
 
       response.data.on('data', (chunk) => {
         buffer += chunk.toString();
@@ -152,6 +192,9 @@ app.post('/v1/chat/completions', async (req, res) => {
                 if (combined) delta.content = combined;
               }
               delete delta.reasoning_content;
+
+              // [DEBUG] 스트리밍 청크 누적 — 필요 시 주석 해제
+              // if (delta.content) streamedOutput += delta.content;
             }
 
             res.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -161,7 +204,11 @@ app.post('/v1/chat/completions', async (req, res) => {
         });
       });
 
-      response.data.on('end', () => res.end());
+      response.data.on('end', () => {
+        // [DEBUG] 스트리밍 최종 출력 확인용 — 필요 시 주석 해제
+        // console.log('[OUTPUT - stream]', streamedOutput);
+        res.end();
+      });
       response.data.on('error', (err) => {
         console.error('Stream error:', err);
         res.end();
@@ -177,6 +224,10 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
         delete choice.message.reasoning_content;
       });
+
+      // [DEBUG] 비스트리밍 출력 데이터 확인용 — 필요 시 주석 해제
+      // console.log('[OUTPUT]', JSON.stringify(data, null, 2));
+
       res.json(data);
     }
   } catch (error) {
