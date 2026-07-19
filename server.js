@@ -133,7 +133,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     };
 
     // [DEBUG] 입력 데이터 확인용 — 필요 시 주석 해제
-    // console.log('[INPUT]', JSON.stringify(nimRequest, null, 2));
+    console.log('[INPUT]', JSON.stringify(nimRequest, null, 2));
 
     const stream = nimRequest.stream;
 
@@ -226,7 +226,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       });
 
       // [DEBUG] 비스트리밍 출력 데이터 확인용 — 필요 시 주석 해제
-      // console.log('[OUTPUT]', JSON.stringify(data, null, 2));
+      console.log('[OUTPUT]', JSON.stringify(data, null, 2));
 
       res.json(data);
     }
